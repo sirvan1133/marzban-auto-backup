@@ -8,7 +8,7 @@ save_config() {
     echo "TELEGRAM_BOT_TOKEN=\"$1\"" > "$CONFIG_FILE"
     echo "TELEGRAM_CHAT_ID=\"$2\"" >> "$CONFIG_FILE"
     echo "BACKUP_INTERVAL_HOURS=\"$3\"" >> "$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"  # Secure file permissions
 }
 
 # Function to read configuration
@@ -19,13 +19,14 @@ read_config() {
 # Function to send backup to Telegram
 send_backup() {
     local backup_file="$1"
+    # Send file via Telegram API
     curl -s -F chat_id="$TELEGRAM_CHAT_ID" -F document=@"$backup_file" \
         "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument" > /dev/null
 }
 
 # Function to create compressed backup
 create_backup() {
-    local timestamp=$(date +"%Y%m%d_%H%M%S")
+    local timestamp=$(date +"%Y%m%d_%H%M%S")  # Generate timestamp
     local backup_file="/tmp/marzban_backup_$timestamp.tar.gz"
     # Create compressed archive of both directories
     tar -czf "$backup_file" /var/lib/marzban/ /opt/marzban/ 2>/dev/null
@@ -46,54 +47,54 @@ if [ "$1" = "--run-backup" ]; then
     read_config
     backup_file=$(create_backup)
     send_backup "$backup_file"
-    rm -f "$backup_file"
+    rm -f "$backup_file"  # Clean up temporary file
     exit 0
 fi
 
-# Main setup interface
-echo "Welcome to the Marzban backup script"
+# Main setup interface (Persian messages)
+echo "به اسکریپت پشتیبان‌گیری Marzban خوش آمدید"
 echo "---------------------------------------"
 
 # Check for existing configuration
 if [ -f "$CONFIG_FILE" ]; then
     read_config
-    echo -e "\nPrevious settings found:"
-    echo "Bot Token: $TELEGRAM_BOT_TOKEN"
-    echo "Chat ID: $TELEGRAM_CHAT_ID"
-    echo "Interval: every $BACKUP_INTERVAL_HOURS hours"
+    echo -e "\nتنظیمات قبلی پیدا شد:"
+    echo "توکن ربات: $TELEGRAM_BOT_TOKEN"
+    echo "آیدی چت: $TELEGRAM_CHAT_ID"
+    echo "فاصله زمانی: هر $BACKUP_INTERVAL_HOURS ساعت"
     
-    read -p "Do you want to use the previous settings? (y/n) " use_existing
+    read -p "آیا می‌خواهید از تنظیمات قبلی استفاده کنید؟ (y/n) " use_existing
     if [ "$use_existing" != "y" ]; then
-        rm -f "$CONFIG_FILE"
+        rm -f "$CONFIG_FILE"  # Remove existing config
     fi
 fi
 
 # Get new configuration if needed
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo -e "\nPlease enter the required information:\n"
+    echo -e "\nلطفاً اطلاعات مورد نیاز را وارد کنید:\n"
     
-    read -p "Telegram bot token: " bot_token
-    read -p "Telegram numeric chat ID: " chat_id
-    read -p "Backup sending interval (hours): " interval
+    read -p "توکن ربات تلگرام: " bot_token
+    read -p "آیدی عددی چت تلگرام: " chat_id
+    read -p "فاصله زمانی ارسال بکاپ (ساعت): " interval
     
     save_config "$bot_token" "$chat_id" "$interval"
-    echo -e "\nSettings saved successfully!"
+    echo -e "\nتنظیمات با موفقیت ذخیره شد!"
 fi
 
 # Load configuration
 read_config
 
 # Create immediate backup
-echo -e "\nCreating the first backup..."
+echo -e "\nدر حال ایجاد اولین پشتیبان..."
 backup_file=$(create_backup)
-echo "Backup created: $backup_file"
-echo "Sending to Telegram..."
+echo "پشتیبان ایجاد شد: $backup_file"
+echo "در حال ارسال به تلگرام..."
 send_backup "$backup_file"
 rm -f "$backup_file"
-echo "Sent successfully!"
+echo "ارسال با موفقیت انجام شد!"
 
 # Setup cron job
 setup_cron "$BACKUP_INTERVAL_HOURS"
-echo -e "\nCron job has been set!"
-echo "Backup will be done every $BACKUP_INTERVAL_HOURS hours"
-echo -e "\nOperation complete!"
+echo -e "\nکرون جاب تنظیم شد!"
+echo "پشتیبان‌گیری هر $BACKUP_INTERVAL_HOURS ساعت یکبار انجام خواهد شد"
+echo -e "\nاتمام عملیات!"
