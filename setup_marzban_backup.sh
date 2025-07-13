@@ -1,14 +1,5 @@
 #!/bin/bash
 
-# --- Remove Windows CR characters from this script on the fly ---
-# This avoids issues with ^M or \r characters from Windows line endings
-if grep -q $'\r' "$0"; then
-    echo "Detected Windows-style line endings, fixing..."
-    sed -i 's/\r$//' "$0"
-    echo "Fixed line endings. Please run the script again."
-    exit 0
-fi
-
 # Configuration file path
 CONFIG_FILE="/root/marzban_backup_config.conf"
 
@@ -28,76 +19,82 @@ read_config() {
 # Function to send backup to Telegram
 send_backup() {
     local backup_file="$1"
+    # Send file via Telegram API
     curl -s -F chat_id="$TELEGRAM_CHAT_ID" -F document=@"$backup_file" \
         "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument" > /dev/null
 }
 
 # Function to create compressed backup
 create_backup() {
-    local timestamp=$(date +"%Y%m%d_%H%M%S")
+    local timestamp=$(date +"%Y%m%d_%H%M%S")  # Generate timestamp
     local backup_file="/tmp/marzban_backup_$timestamp.tar.gz"
+    # Create compressed archive of both directories
     tar -czf "$backup_file" /var/lib/marzban/ /opt/marzban/ 2>/dev/null
     echo "$backup_file"
 }
 
-# Setup cron job
+# Function to setup cron job
 setup_cron() {
     local interval="$1"
+    # Create cron command with interval
     local cron_cmd="0 */$interval * * * /bin/bash $0 --run-backup"
+    # Add to crontab without duplication
     (crontab -l 2>/dev/null | grep -v -F "$0"; echo "$cron_cmd") | crontab -
 }
 
 # Backup execution mode
 if [ "$1" = "--run-backup" ]; then
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo "Configuration file not found. Please run the script without parameters first."
-        exit 1
-    fi
     read_config
     backup_file=$(create_backup)
     send_backup "$backup_file"
-    rm -f "$backup_file"
+    rm -f "$backup_file"  # Clean up temporary file
     exit 0
 fi
 
+# Main setup interface (English messages)
 echo "Welcome to Marzban Backup Script"
-echo "--------------------------------"
+echo "-------------------------------"
 
+# Check for existing configuration
 if [ -f "$CONFIG_FILE" ]; then
     read_config
     echo -e "\nExisting configuration found:"
     echo "Bot Token: $TELEGRAM_BOT_TOKEN"
     echo "Chat ID: $TELEGRAM_CHAT_ID"
-    echo "Backup interval: every $BACKUP_INTERVAL_HOURS hour(s)"
-
-    read -p "Do you want to use the existing settings? (y/n) " use_existing
+    echo "Backup Interval: every $BACKUP_INTERVAL_HOURS hours"
+    
+    read -p "Do you want to use existing settings? (y/n) " use_existing
     if [ "$use_existing" != "y" ]; then
-        rm -f "$CONFIG_FILE"
+        rm -f "$CONFIG_FILE"  # Remove existing config
     fi
 fi
 
+# Get new configuration if needed
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo -e "\nPlease enter the required information:\n"
-
-    read -p "Telegram bot token: " bot_token
-    read -p "Telegram numeric chat ID: " chat_id
-    read -p "Backup sending interval (hours): " interval
-
+    echo -e "\nPlease enter required information:\n"
+    
+    read -p "Telegram Bot Token: " bot_token
+    read -p "Telegram Chat ID: " chat_id
+    read -p "Backup interval (hours): " interval
+    
     save_config "$bot_token" "$chat_id" "$interval"
-    echo -e "\nSettings saved successfully!"
+    echo -e "\nConfiguration saved successfully!"
 fi
 
+# Load configuration
 read_config
 
-echo -e "\nCreating the first backup..."
+# Create immediate backup
+echo -e "\nCreating first backup..."
 backup_file=$(create_backup)
 echo "Backup created: $backup_file"
-echo "Sending backup to Telegram..."
+echo "Sending to Telegram..."
 send_backup "$backup_file"
 rm -f "$backup_file"
 echo "Backup sent successfully!"
 
+# Setup cron job
 setup_cron "$BACKUP_INTERVAL_HOURS"
-echo -e "\nCron job has been set!"
-echo "Backup will run every $BACKUP_INTERVAL_HOURS hour(s)"
-echo -e "\nOperation completed!"
+echo -e "\nCron job set up!"
+echo "Backups will run every $BACKUP_INTERVAL_HOURS hours"
+echo -e "\nSetup completed!"
