@@ -1,100 +1,122 @@
 #!/bin/bash
 
-# Configuration file path
-CONFIG_FILE="/root/marzban_backup_config.conf"
+# Configuration file paths
+CONFIG_FILE="$HOME/.marzban_backup_config"
+BACKUP_DIR="/tmp/marzban_backups"
+LOG_FILE="/var/log/marzban_backup.log"
 
-# Function to save settings to config file
-save_config() {
-    echo "TELEGRAM_BOT_TOKEN=\"$1\"" > "$CONFIG_FILE"
-    echo "TELEGRAM_CHAT_ID=\"$2\"" >> "$CONFIG_FILE"
-    echo "BACKUP_INTERVAL_HOURS=\"$3\"" >> "$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE"  # Secure file permissions
+# Function to log messages
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
 }
 
-# Function to read configuration
-read_config() {
-    source "$CONFIG_FILE"
+# Function to check and load configuration
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+        return 0
+    else
+        return 1
+    fi
 }
 
-# Function to send backup to Telegram
-send_backup() {
-    local backup_file="$1"
-    # Send file via Telegram API
-    curl -s -F chat_id="$TELEGRAM_CHAT_ID" -F document=@"$backup_file" \
-        "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument" > /dev/null
+# Function to get user input for configuration
+get_user_input() {
+    echo "Please enter the following information:"
+    read -p "Telegram Bot Token: " TELEGRAM_TOKEN
+    read -p "Telegram Chat ID: " TELEGRAM_CHAT_ID
+    read -p "Backup interval (in hours): " BACKUP_INTERVAL
+
+    # Save configuration to file
+    echo "TELEGRAM_TOKEN='$TELEGRAM_TOKEN'" > "$CONFIG_FILE"
+    echo "TELEGRAM_CHAT_ID='$TELEGRAM_CHAT_ID'" >> "$CONFIG_FILE"
+    echo "BACKUP_INTERVAL='$BACKUP_INTERVAL'" >> "$CONFIG_FILE"
+    
+    log_message "New configuration saved"
 }
 
-# Function to create compressed backup
+# Function to create backup
 create_backup() {
-    local timestamp=$(date +"%Y%m%d_%H%M%S")  # Generate timestamp
-    local backup_file="/tmp/marzban_backup_$timestamp.tar.gz"
-    # Create compressed archive of both directories
-    tar -czf "$backup_file" /var/lib/marzban/ /opt/marzban/ 2>/dev/null
-    echo "$backup_file"
+    # Create backup directory if it doesn't exist
+    mkdir -p "$BACKUP_DIR"
+    
+    # Backup file name with timestamp
+    BACKUP_FILE="$BACKUP_DIR/marzban_backup_$(date '+%Y%m%d_%H%M%S').tar.gz"
+    
+    # Create backup
+    tar -czf "$BACKUP_FILE" /var/lib/marzban/ /op/marzban/ 2>> "$LOG_FILE"
+    
+    if [[ $? -eq 0 ]]; then
+        log_message "Backup created successfully: $BACKUP_FILE"
+        send_to_telegram "$BACKUP_FILE"
+    else
+        log_message "Error creating backup"
+        echo "Error creating backup. Please check the log file: $LOG_FILE"
+        exit 1
+    fi
 }
 
-# Function to setup cron job
+# Function to send backup file to Telegram
+send_to_telegram() {
+    local backup_file="$1"
+    curl -s -F chat_id="$TELEGRAM_CHAT_ID" \
+         -F document=@"$backup_file" \
+         "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument" >> "$LOG_FILE" 2>&1
+    
+    if [[ $? -eq 0 ]]; then
+        log_message "Backup file sent to Telegram"
+        # Remove temporary backup file after sending
+        rm -f "$backup_file"
+        log_message "Temporary backup file deleted"
+    else
+        log_message "Error sending file to Telegram"
+        echo "Error sending file to Telegram. Please check the log file: $LOG_FILE"
+    fi
+}
+
+# Function to set up cron job
 setup_cron() {
-    local interval="$1"
-    # Create cron command with interval
-    local cron_cmd="0 */$interval * * * /bin/bash $0 --run-backup"
-    # Add to crontab without duplication
-    (crontab -l 2>/dev/null | grep -v -F "$0"; echo "$cron_cmd") | crontab -
+    local script_path="$0"
+    local cron_interval="0 */$BACKUP_INTERVAL * * *"
+    local cron_job="$cron_interval bash $script_path --run-backup"
+    
+    # Remove previous cron job if exists
+    crontab -l 2>/dev/null | grep -v "$script_path" > /tmp/crontab_tmp
+    echo "$cron_job" >> /tmp/crontab_tmp
+    crontab /tmp/crontab_tmp
+    rm -f /tmp/crontab_tmp
+    
+    log_message "Cron job set up successfully: every $BACKUP_INTERVAL hours"
+    echo "Cron job set up: every $BACKUP_INTERVAL hours"
 }
 
-# Backup execution mode
-if [ "$1" = "--run-backup" ]; then
-    read_config
-    backup_file=$(create_backup)
-    send_backup "$backup_file"
-    rm -f "$backup_file"  # Clean up temporary file
+# Check command-line arguments
+if [[ "$1" == "--run-backup" ]]; then
+    # Load configuration
+    if ! load_config; then
+        echo "Error: Configuration file not found!"
+        exit 1
+    fi
+    
+    # Run backup
+    create_backup
     exit 0
 fi
 
-# Main setup interface (English messages)
-echo "Welcome to Marzban Backup Script"
-echo "-------------------------------"
+# Main script execution
+echo "Marzban Automatic Backup Setup Script"
 
-# Check for existing configuration
-if [ -f "$CONFIG_FILE" ]; then
-    read_config
-    echo -e "\nExisting configuration found:"
-    echo "Bot Token: $TELEGRAM_BOT_TOKEN"
-    echo "Chat ID: $TELEGRAM_CHAT_ID"
-    echo "Backup Interval: every $BACKUP_INTERVAL_HOURS hours"
-    
-    read -p "Do you want to use existing settings? (y/n) " use_existing
-    if [ "$use_existing" != "y" ]; then
-        rm -f "$CONFIG_FILE"  # Remove existing config
-    fi
+# Load configuration or prompt user for input
+if ! load_config; then
+    get_user_input
+    load_config
 fi
 
-# Get new configuration if needed
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo -e "\nPlease enter required information:\n"
-    
-    read -p "Telegram Bot Token: " bot_token
-    read -p "Telegram Chat ID: " chat_id
-    read -p "Backup interval (hours): " interval
-    
-    save_config "$bot_token" "$chat_id" "$interval"
-    echo -e "\nConfiguration saved successfully!"
-fi
+# Set up cron job
+setup_cron
 
-# Load configuration
-read_config
+# Run initial backup
+create_backup
 
-# Create immediate backup
-echo -e "\nCreating first backup..."
-backup_file=$(create_backup)
-echo "Backup created: $backup_file"
-echo "Sending to Telegram..."
-send_backup "$backup_file"
-rm -f "$backup_file"
-echo "Backup sent successfully!"
-
-# Setup cron job
-setup_cron "$BACKUP_INTERVAL_HOURS"
-echo -e "\nCron job set up!"
-echo "Backups will run every $BACKUP_INTERVAL_HOURS hours"
-echo -e "\nSetup completed!"
+echo "Setup completed successfully. Initial backup sent."
+echo "Check the log file for details: $LOG_FILE"
