@@ -5,6 +5,12 @@ green='\033[0;32m'
 red='\033[0;31m'
 plain='\033[0m'
 
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${red}❌ Please run as root${plain}"
+  exit 1
+fi
+
 # Paths
 config_file="/etc/marzban_backup.conf"
 script_path="/usr/local/bin/send_marzban_backup.sh"
@@ -15,21 +21,23 @@ read -p "🆔 Enter your Telegram numeric ID: " telegram_id
 read -p "⏱️ How often (in hours) should the backup be sent? " interval
 
 # Validate interval
-if ! [[ "$interval" =~ ^[0-9]+$ ]]; then
-  echo -e "${red}❌ Invalid input. Please enter a numeric value only.${plain}"
+if ! [[ "$interval" =~ ^[0-9]+$ ]] || [ "$interval" -eq 0 ]; then
+  echo -e "${red}❌ Invalid input. Please enter a numeric value greater than 0.${plain}"
   exit 1
 fi
 
 # Save config
-echo "BOT_TOKEN=\"$bot_token\"" > $config_file
-echo "TELEGRAM_ID=\"$telegram_id\"" >> $config_file
-chmod 600 $config_file
+echo "BOT_TOKEN=\"$bot_token\"" > "$config_file"
+echo "TELEGRAM_ID=\"$telegram_id\"" >> "$config_file"
+chmod 600 "$config_file"
 
-# Make sure zip is installed
-if ! command -v zip >/dev/null 2>&1; then
-  echo -e "${green}📦 Installing zip package...${plain}"
-  apt update -y && apt install -y zip
-fi
+# Ensure required commands are installed
+for cmd in zip curl; do
+  if ! command -v $cmd >/dev/null 2>&1; then
+    echo -e "${green}📦 Installing $cmd package...${plain}"
+    apt update -y && apt install -y $cmd
+  fi
+done
 
 # Create the backup script
 cat > "$script_path" << 'EOF'
@@ -54,8 +62,12 @@ curl -s -F chat_id="$TELEGRAM_ID" -F document=@"$backup_file" \
 rm -f "$backup_file"
 EOF
 
-# Make it executable
+# Make backup script executable
 chmod +x "$script_path"
+
+# Run backup script immediately once
+echo -e "${green}⏳ Running first backup now...${plain}"
+"$script_path"
 
 # Add to crontab (clean old jobs)
 (crontab -l 2>/dev/null | grep -v "$script_path"; echo "0 */$interval * * * $script_path") | crontab -
