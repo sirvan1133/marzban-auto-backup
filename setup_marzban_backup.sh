@@ -1,66 +1,105 @@
 #!/bin/bash
 
-# Colors
-green='\033[0;32m'
-red='\033[0;31m'
-plain='\033[0m'
+# Marzban Backup Script
+# =====================
+# This script is for automatic backups of Marzban paths.
+# Features:
+# - Install prerequisites at the beginning.
+# - Store initial settings in a config file for subsequent runs.
+# - Create tar.gz backup of specified paths.
+# - Send backup to Telegram via Bot API.
+# - Set up cron job for periodic execution.
+# - Perform initial backup after setup.
+# - All script messages in Persian for Persian-speaking users.
+#
+# Requirements: Ubuntu 20.04 or higher. Run with sudo.
+# Usage: sudo bash backup_marzban.sh
+# For cron execution: sudo bash backup_marzban.sh --auto
+#
+# Author: [Your name or alias] - For GitHub
+# License: MIT (or your preferred license)
 
-# Paths
-config_file="/etc/marzban_backup.conf"
-script_path="/usr/local/bin/send_marzban_backup.sh"
+# Colors for nicer output (optional)
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m' # No color
 
-# Ask for user input
-read -p "🤖 Enter your Telegram bot token: " bot_token
-read -p "🆔 Enter your Telegram numeric ID: " telegram_id
-read -p "⏱️ How often (in hours) should the backup be sent? " interval
+# Config file path
+CONFIG_FILE="$HOME/.marzban_backup_config"
 
-# Validate interval
-if ! [[ "$interval" =~ ^[0-9]+$ ]]; then
-  echo -e "${red}❌ Invalid input. Please enter a numeric value only.${plain}"
-  exit 1
+# Function to display error and exit
+error_exit() {
+    echo -e "${RED}خطا: $1${NC}"
+    exit 1
+}
+
+# Install prerequisites
+echo "در حال بررسی و نصب پیش‌نیازها..."
+sudo apt update -y || error_exit "به‌روزرسانی لیست پکیج‌ها شکست خورد."
+sudo apt install -y curl tar cron || error_exit "نصب پکیج‌ها شکست خورد."
+echo -e "${GREEN}پیش‌نیازها با موفقیت نصب شدند.${NC}"
+
+# Check if argument is --auto (for cron run without interaction)
+if [ "$1" == "--auto" ]; then
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error_exit "فایل کانفیگ وجود ندارد. ابتدا اسکریپت را بدون آرگومان اجرا کنید."
+    fi
+    source "$CONFIG_FILE"
+    # Proceed to backup section
+else
+    # Initial setup if config file doesn't exist
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "تنظیمات اولیه اسکریپت:"
+        read -p "توکن ربات تلگرام را وارد کنید: " TELEGRAM_TOKEN
+        read -p "آیدی عددی چت تلگرام را وارد کنید: " TELEGRAM_CHAT_ID
+        read -p "هر چند ساعت یک‌بار بکاپ گرفته شود؟ (عدد ساعت، مثلاً 6): " BACKUP_INTERVAL
+
+        # Simple input validation
+        if [[ -z "$TELEGRAM_TOKEN" || -z "$TELEGRAM_CHAT_ID" || ! "$BACKUP_INTERVAL" =~ ^[0-9]+$ ]]; then
+            error_exit "ورودی‌های نامعتبر. لطفاً مقادیر صحیح وارد کنید."
+        fi
+
+        # Save to config file
+        echo "TELEGRAM_TOKEN=$TELEGRAM_TOKEN" > "$CONFIG_FILE"
+        echo "TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID" >> "$CONFIG_FILE"
+        echo "BACKUP_INTERVAL=$BACKUP_INTERVAL" >> "$CONFIG_FILE"
+        chmod 600 "$CONFIG_FILE"  # Secure the file
+        echo -e "${GREEN}تنظیمات ذخیره شدند.${NC}"
+    else
+        source "$CONFIG_FILE"
+        echo "تنظیمات از فایل کانفیگ بارگذاری شدند."
+    fi
+
+    # Set up cron job (persistent, survives reboots)
+    SCRIPT_PATH=$(realpath "$0")
+    CRON_JOB="0 */$BACKUP_INTERVAL * * * sudo bash $SCRIPT_PATH --auto"
+    (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab - || error_exit "تنظیم کرون‌جاب شکست خورد."
+    echo -e "${GREEN}کرون‌جاب تنظیم شد: هر $BACKUP_INTERVAL ساعت یک‌بار.${NC}"
 fi
 
-# Save config
-echo "BOT_TOKEN=\"$bot_token\"" > $config_file
-echo "TELEGRAM_ID=\"$telegram_id\"" >> $config_file
-chmod 600 $config_file
+# Create backup
+echo "در حال ایجاد بکاپ..."
+BACKUP_DIR="/tmp/marzban_backups"
+mkdir -p "$BACKUP_DIR" || error_exit "ایجاد دایرکتوری بکاپ شکست خورد."
+BACKUP_FILE="$BACKUP_DIR/marzban_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
 
-# Make sure zip is installed
-if ! command -v zip >/dev/null 2>&1; then
-  echo -e "${green}📦 Installing zip package...${plain}"
-  apt update -y && apt install -y zip
+tar -czf "$BACKUP_FILE" /var/lib/marzban/ /op/marzban/ || error_exit "ایجاد فایل بکاپ شکست خورد."
+echo -e "${GREEN}بکاپ با موفقیت ایجاد شد: $BACKUP_FILE${NC}"
+
+# Send to Telegram
+echo "در حال ارسال بکاپ به تلگرام..."
+RESPONSE=$(curl -s -F chat_id="$TELEGRAM_CHAT_ID" -F document=@"$BACKUP_FILE" "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument")
+
+# Check send success
+if echo "$RESPONSE" | grep -q '"ok":true'; then
+    echo -e "${GREEN}بکاپ با موفقیت به تلگرام ارسال شد.${NC}"
+else
+    error_exit "ارسال به تلگرام شکست خورد. پاسخ: $RESPONSE"
 fi
 
-# Create the backup script
-cat > "$script_path" << 'EOF'
-#!/bin/bash
+# Clean up local backup file (optional, to avoid filling space)
+rm -f "$BACKUP_FILE"
+echo "فایل بکاپ محلی پاک شد."
 
-# Load config
-source /etc/marzban_backup.conf
-
-# Define backup details
-backup_time=$(date +%Y-%m-%d_%H-%M-%S)
-backup_file="/tmp/marzban_backup_$backup_time.zip"
-dirs=("/var/lib/marzban" "/op/marzban")
-
-# Create ZIP archive
-zip -r -q "$backup_file" "${dirs[@]}" 2>/dev/null
-
-# Send ZIP to Telegram
-curl -s -F chat_id="$TELEGRAM_ID" -F document=@"$backup_file" \
-    "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" > /dev/null
-
-# Remove the backup
-rm -f "$backup_file"
-EOF
-
-# Make it executable
-chmod +x "$script_path"
-
-# Add to crontab (clean old jobs)
-(crontab -l 2>/dev/null | grep -v "$script_path"; echo "0 */$interval * * * $script_path") | crontab -
-
-# Final output
-echo -e "${green}✅ Configuration saved to: $config_file${plain}"
-echo -e "${green}✅ Backup script saved at: $script_path${plain}"
-echo -e "${green}✅ Cron job scheduled every $interval hour(s) to send ZIP archive to Telegram.${plain}"
+# Script end
+echo -e "${GREEN}عملیات با موفقیت به پایان رسید.${NC}"
