@@ -1,105 +1,91 @@
 #!/bin/bash
 
-# Marzban Backup Script
-# =====================
-# This script is for automatic backups of Marzban paths.
-# Features:
-# - Install prerequisites at the beginning.
-# - Store initial settings in a config file for subsequent runs.
-# - Create tar.gz backup of specified paths.
-# - Send backup to Telegram via Bot API.
-# - Set up cron job for periodic execution.
-# - Perform initial backup after setup.
-# - All script messages in Persian for Persian-speaking users.
-#
-# Requirements: Ubuntu 20.04 or higher. Run with sudo.
-# Usage: sudo bash backup_marzban.sh
-# For cron execution: sudo bash backup_marzban.sh --auto
-#
-# Author: [Your name or alias] - For GitHub
-# License: MIT (or your preferred license)
-
-# Colors for nicer output (optional)
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m' # No color
-
-# Config file path
 CONFIG_FILE="$HOME/.marzban_backup_config"
+BACKUP_SCRIPT="$HOME/marzban_backup.sh"
 
-# Function to display error and exit
-error_exit() {
-    echo -e "${RED}خطا: $1${NC}"
-    exit 1
+install_dependencies() {
+  echo "🔧 در حال نصب پیش‌نیازها..."
+  sudo apt update -y
+  sudo apt install -y curl cron tar bash
 }
 
-# Install prerequisites
-echo "در حال بررسی و نصب پیش‌نیازها..."
-sudo apt update -y || error_exit "به‌روزرسانی لیست پکیج‌ها شکست خورد."
-sudo apt install -y curl tar cron || error_exit "نصب پکیج‌ها شکست خورد."
-echo -e "${GREEN}پیش‌نیازها با موفقیت نصب شدند.${NC}"
+ask_config() {
+  echo "🔐 توکن ربات تلگرام را وارد کنید:"
+  read -r TELEGRAM_TOKEN
+  echo "💬 آیدی عددی تلگرام خود را وارد کنید:"
+  read -r TELEGRAM_CHAT_ID
+  echo "⏰ هر چند ساعت یک‌بار می‌خواهید بکاپ ارسال شود؟ (مثال: 6)"
+  read -r INTERVAL_HOURS
 
-# Check if argument is --auto (for cron run without interaction)
-if [ "$1" == "--auto" ]; then
-    if [ ! -f "$CONFIG_FILE" ]; then
-        error_exit "فایل کانفیگ وجود ندارد. ابتدا اسکریپت را بدون آرگومان اجرا کنید."
-    fi
+  cat > "$CONFIG_FILE" <<EOF
+TELEGRAM_TOKEN="$TELEGRAM_TOKEN"
+TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
+INTERVAL_HOURS="$INTERVAL_HOURS"
+EOF
+  echo "✅ تنظیمات ذخیره شدند."
+}
+
+load_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
-    # Proceed to backup section
-else
-    # Initial setup if config file doesn't exist
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo "تنظیمات اولیه اسکریپت:"
-        read -p "توکن ربات تلگرام را وارد کنید: " TELEGRAM_TOKEN
-        read -p "آیدی عددی چت تلگرام را وارد کنید: " TELEGRAM_CHAT_ID
-        read -p "هر چند ساعت یک‌بار بکاپ گرفته شود؟ (عدد ساعت، مثلاً 6): " BACKUP_INTERVAL
-
-        # Simple input validation
-        if [[ -z "$TELEGRAM_TOKEN" || -z "$TELEGRAM_CHAT_ID" || ! "$BACKUP_INTERVAL" =~ ^[0-9]+$ ]]; then
-            error_exit "ورودی‌های نامعتبر. لطفاً مقادیر صحیح وارد کنید."
-        fi
-
-        # Save to config file
-        echo "TELEGRAM_TOKEN=$TELEGRAM_TOKEN" > "$CONFIG_FILE"
-        echo "TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID" >> "$CONFIG_FILE"
-        echo "BACKUP_INTERVAL=$BACKUP_INTERVAL" >> "$CONFIG_FILE"
-        chmod 600 "$CONFIG_FILE"  # Secure the file
-        echo -e "${GREEN}تنظیمات ذخیره شدند.${NC}"
-    else
-        source "$CONFIG_FILE"
-        echo "تنظیمات از فایل کانفیگ بارگذاری شدند."
+    if [[ -z "$TELEGRAM_TOKEN" || -z "$TELEGRAM_CHAT_ID" || -z "$INTERVAL_HOURS" ]]; then
+      echo "⚠️ فایل تنظیمات ناقص است. لطفاً دوباره وارد کنید."
+      ask_config
     fi
+  else
+    ask_config
+  fi
+}
 
-    # Set up cron job (persistent, survives reboots)
-    SCRIPT_PATH=$(realpath "$0")
-    CRON_JOB="0 */$BACKUP_INTERVAL * * * sudo bash $SCRIPT_PATH --auto"
-    (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab - || error_exit "تنظیم کرون‌جاب شکست خورد."
-    echo -e "${GREEN}کرون‌جاب تنظیم شد: هر $BACKUP_INTERVAL ساعت یک‌بار.${NC}"
+create_backup_script() {
+  cat > "$BACKUP_SCRIPT" <<'EOF'
+#!/bin/bash
+source "$HOME/.marzban_backup_config"
+
+BACKUP_PATHS=("/var/lib/marzban" "/op/marzban")
+BACKUP_FILE="/tmp/marzban_backup_$(date +'%Y%m%d_%H%M%S').tar.gz"
+
+tar -czf "$BACKUP_FILE" "${BACKUP_PATHS[@]}" 2>/dev/null
+
+if [[ $? -ne 0 ]]; then
+  echo "❌ خطا در ساخت بکاپ!"
+  exit 1
 fi
 
-# Create backup
-echo "در حال ایجاد بکاپ..."
-BACKUP_DIR="/tmp/marzban_backups"
-mkdir -p "$BACKUP_DIR" || error_exit "ایجاد دایرکتوری بکاپ شکست خورد."
-BACKUP_FILE="$BACKUP_DIR/marzban_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument" \
+-F chat_id="$TELEGRAM_CHAT_ID" \
+-F document=@"$BACKUP_FILE" \
+-F caption="📦 بکاپ اتومات مارزبان - $(date +'%Y/%m/%d %H:%M:%S')"
 
-tar -czf "$BACKUP_FILE" /var/lib/marzban/ /op/marzban/ || error_exit "ایجاد فایل بکاپ شکست خورد."
-echo -e "${GREEN}بکاپ با موفقیت ایجاد شد: $BACKUP_FILE${NC}"
-
-# Send to Telegram
-echo "در حال ارسال بکاپ به تلگرام..."
-RESPONSE=$(curl -s -F chat_id="$TELEGRAM_CHAT_ID" -F document=@"$BACKUP_FILE" "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument")
-
-# Check send success
-if echo "$RESPONSE" | grep -q '"ok":true'; then
-    echo -e "${GREEN}بکاپ با موفقیت به تلگرام ارسال شد.${NC}"
-else
-    error_exit "ارسال به تلگرام شکست خورد. پاسخ: $RESPONSE"
-fi
-
-# Clean up local backup file (optional, to avoid filling space)
 rm -f "$BACKUP_FILE"
-echo "فایل بکاپ محلی پاک شد."
+EOF
 
-# Script end
-echo -e "${GREEN}عملیات با موفقیت به پایان رسید.${NC}"
+  chmod +x "$BACKUP_SCRIPT"
+  echo "✅ اسکریپت بکاپ ساخته شد: $BACKUP_SCRIPT"
+}
+
+setup_cronjob() {
+  CRON_EXPR="0 */$INTERVAL_HOURS * * *"
+  CRON_LINE="$CRON_EXPR $BACKUP_SCRIPT >/dev/null 2>&1"
+
+  crontab -l 2>/dev/null | grep -v "$BACKUP_SCRIPT" > /tmp/cron.tmp || true
+  echo "$CRON_LINE" >> /tmp/cron.tmp
+  crontab /tmp/cron.tmp
+  rm -f /tmp/cron.tmp
+
+  echo "📆 کرون‌جاب ثبت شد. هر $INTERVAL_HOURS ساعت یک‌بار اجرا می‌شود."
+}
+
+run_once_now() {
+  echo "🚀 ارسال اولین بکاپ..."
+  "$BACKUP_SCRIPT"
+}
+
+# اجرای کل فرآیند
+install_dependencies
+load_config
+create_backup_script
+run_once_now
+setup_cronjob
+
+echo "🎉 نصب و تنظیم با موفقیت انجام شد!"
