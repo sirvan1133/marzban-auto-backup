@@ -7,10 +7,10 @@ BACKUP_SCRIPT="$HOME/marzban_backup.sh"
 install_dependencies() {
   echo "🔧 Installing required packages..."
   sudo apt update -y
-  sudo apt install -y curl cron bash zip
+  sudo apt install -y curl cron tar bash
 }
 
-# Ask user for Telegram bot token, chat ID, backup interval, container name, and db credentials
+# Ask user for Telegram bot token, chat ID, and backup interval
 ask_config() {
   echo "Enter your Telegram Bot Token:"
   read -r TELEGRAM_TOKEN
@@ -21,23 +21,11 @@ ask_config() {
   echo "How often should the backup run? (e.g., every how many hours):"
   read -r INTERVAL_HOURS
 
-  echo "Enter the Docker container name running your database (e.g. marzban-mysql-1):"
-  read -r CONTAINER_NAME
-
-  echo "Enter the MySQL root username inside the container (usually root):"
-  read -r DB_USER
-
-  echo "Enter the MySQL root password inside the container:"
-  read -r DB_PASSWORD
-
   # Save config to file
   cat > "$CONFIG_FILE" <<EOF
 TELEGRAM_TOKEN="$TELEGRAM_TOKEN"
 TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
 INTERVAL_HOURS="$INTERVAL_HOURS"
-CONTAINER_NAME="$CONTAINER_NAME"
-DB_USER="$DB_USER"
-DB_PASSWORD="$DB_PASSWORD"
 EOF
 
   echo "✅ Config saved successfully."
@@ -47,7 +35,7 @@ EOF
 load_config() {
   if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
-    if [[ -z "$TELEGRAM_TOKEN" || -z "$TELEGRAM_CHAT_ID" || -z "$INTERVAL_HOURS" || -z "$CONTAINER_NAME" || -z "$DB_USER" || -z "$DB_PASSWORD" ]]; then
+    if [[ -z "$TELEGRAM_TOKEN" || -z "$TELEGRAM_CHAT_ID" || -z "$INTERVAL_HOURS" ]]; then
       echo "⚠️ Config is incomplete. Re-entering configuration..."
       ask_config
     fi
@@ -58,32 +46,33 @@ load_config() {
 
 # Create the backup script that will be run by cron
 create_backup_script() {
-  cat > "$BACKUP_SCRIPT" <<EOF
+  cat > "$BACKUP_SCRIPT" <<'EOF'
 #!/bin/bash
-source "$CONFIG_FILE"
+source "$HOME/.marzban_backup_config"
 
-BACKUP_FILE="/tmp/marzban_db_backup_\$(date +'%Y%m%d_%H%M%S').sql"
+# Directories to backup
+BACKUP_PATHS=("/var/lib/marzban" "/op/marzban")
 
-# Run mysqldump inside the Docker container and save backup to host
-docker exec \$CONTAINER_NAME /usr/bin/mysqldump -u \$DB_USER -p"\$DB_PASSWORD" --all-databases > "\$BACKUP_FILE"
+# Output file name
+BACKUP_FILE="/tmp/marzban_backup_$(date +'%Y%m%d_%H%M%S').tar.gz"
 
-if [[ \$? -ne 0 ]]; then
+# Create the backup archive
+tar -czf "$BACKUP_FILE" "${BACKUP_PATHS[@]}" 2>/dev/null
+
+# If backup failed
+if [[ $? -ne 0 ]]; then
   echo "❌ Backup failed!"
   exit 1
 fi
 
-# Compress the backup to reduce size
-zip "\${BACKUP_FILE}.zip" "\$BACKUP_FILE"
-rm -f "\$BACKUP_FILE"
-
-# Send the compressed backup to Telegram
-curl -s -X POST "https://api.telegram.org/bot\$TELEGRAM_TOKEN/sendDocument" \\
--F chat_id="\$TELEGRAM_CHAT_ID" \\
--F document=@"\${BACKUP_FILE}.zip" \\
--F caption="📦 Marzban DB Backup - \$(date +'%Y/%m/%d %H:%M:%S')"
+# Send the backup to Telegram
+curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument" \
+-F chat_id="$TELEGRAM_CHAT_ID" \
+-F document=@"$BACKUP_FILE" \
+-F caption="📦 Marzban auto-backup - $(date +'%Y/%m/%d %H:%M:%S')"
 
 # Clean up
-rm -f "\${BACKUP_FILE}.zip"
+rm -f "$BACKUP_FILE"
 EOF
 
   chmod +x "$BACKUP_SCRIPT"
